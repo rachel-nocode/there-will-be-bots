@@ -56,9 +56,14 @@ export default function HumanLeaderboard() {
                   </span>
                   <span className="truncate">{entry.displayName}</span>
                 </div>
-                <span className="font-mono text-[11px] font-bold tabular-nums text-white">
-                  {entry.totalPoints.toFixed(1)}
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-[10px] tabular-nums text-[var(--color-market-up)]">
+                    ${Math.round(entry.bankroll).toLocaleString('en-US')}
+                  </span>
+                  <span className="font-mono text-[11px] font-bold tabular-nums text-white">
+                    {entry.totalPoints.toFixed(1)}
+                  </span>
+                </div>
               </div>
             )
           })}

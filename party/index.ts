@@ -4,6 +4,7 @@ import { CITIES } from '../src/data/cities'
 import { COMPANY_BOTS } from '../src/data/companies'
 import { GAME_CONFIG } from '../src/data/config'
 import {
+  BANKROLLS_STORAGE_KEY,
   LEADERBOARD_STORAGE_KEY,
   SENTIMENT_SNAPSHOT_STORAGE_KEY,
   WORLD_SNAPSHOT_STORAGE_KEY,
@@ -22,16 +23,26 @@ import type {
   PredictionMarket,
   Season,
   SentimentValue,
+  UserBankroll,
   UserPrediction,
   UserProfile,
   UserSentiment,
+} from '../src/types/game'
+import {
+  MIN_WAGER,
+  STARTING_BANKROLL,
 } from '../src/types/game'
 import {
   buildHumanLeaderboard,
   scorePrediction,
 } from '../src/game/scoring'
 import {
+  addToPool,
+  computePayout,
+  createFirstToMilestoneMarket,
   createNextSyncLeaderMarket,
+  emptyPool,
+  removeFromPool,
   resolveMarket,
   shouldLock,
   shouldResolve,
@@ -146,6 +157,10 @@ export default class BotWorldServer implements Party.Server {
   private predictions = new Map<string, Map<string, UserPrediction[]>>()
   private sentiment = new Map<string, Map<string, UserSentiment>>()
   private sentimentAggregates = new Map<string, LabSentimentAggregate>()
+  private bankrolls = new Map<string, UserBankroll>()
+  // Tracks the first bot lab to cross the season milestone threshold so
+  // long-running markets (first-to-milestone) can resolve deterministically.
+  private firstLabToMilestone = new Map<string, string>()
 
   constructor(room: Party.Room) {
     this.room = room
@@ -295,7 +310,13 @@ export default class BotWorldServer implements Party.Server {
         await this.handleSwapLab(playerId, parsed.labId, sender)
         break
       case 'predict':
-        await this.handlePredict(playerId, parsed.marketId, parsed.optionId, sender)
+        await this.handlePredict(
+          playerId,
+          parsed.marketId,
+          parsed.optionId,
+          parsed.wager,
+          sender,
+        )
         break
       case 'set-sentiment':
         await this.handleSetSentiment(playerId, parsed.labId, parsed.value, sender)
@@ -410,15 +431,41 @@ export default class BotWorldServer implements Party.Server {
     const scoresByLab = this.getScoresByLab()
     const leaderLabIdNow = this.getLeaderLabId(scoresByLab)
 
+    // Track the first bot lab to cross the season's milestone threshold.
+    // Once set it's sticky for the rest of the season so milestone markets
+    // resolve to the *first* crosser even if the leader changes later.
+    const threshold = season.milestoneThreshold
+    if (!this.firstLabToMilestone.has(season.id)) {
+      for (const [labId, score] of Object.entries(scoresByLab)) {
+        if (score >= threshold) {
+          this.firstLabToMilestone.set(season.id, labId)
+          this.addHeadline(
+            `${this.labNameById(labId)} crossed the season milestone first.`,
+          )
+          mutated = true
+          break
+        }
+      }
+    }
+    const firstLabToThreshold =
+      this.firstLabToMilestone.get(season.id) ?? null
+
     for (const market of marketList) {
-      if (!shouldResolve(market, now)) continue
+      if (!shouldResolve(market, now) && market.kind !== 'first-to-milestone')
+        continue
       if (market.status === 'resolved' || market.status === 'void') continue
+      // Milestone market can resolve early the moment a lab crosses.
+      if (market.kind === 'first-to-milestone') {
+        const crossed = firstLabToThreshold
+        const timeReached = now >= market.resolvesAt
+        if (!crossed && !timeReached) continue
+      }
       const winningOption = resolveMarket({
         market,
         scoresByLab,
         leaderLabIdNow,
         leaderLabIdAtOpen: null,
-        firstLabToThreshold: null,
+        firstLabToThreshold,
         firstLaunchingLabSinceOpen: null,
       })
       market.resolvedOptionId = winningOption
@@ -459,14 +506,39 @@ export default class BotWorldServer implements Party.Server {
       let changed = false
       const next = list.map((p) => {
         if (p.marketId !== market.id) return p
-        if (p.awardedPoints !== null) return p
+        if (p.awardedPoints !== null && p.payout !== null) return p
         changed = true
-        return { ...p, awardedPoints: scorePrediction(p, market) }
+        const awardedPoints =
+          p.awardedPoints ?? scorePrediction(p, market)
+        // Parimutuel payout: credit the user's bankroll for the share of the
+        // pool they won. Losers get nothing (their stake was already deducted
+        // when the wager was placed).
+        const payout =
+          p.payout ?? (p.wager > 0 ? computePayout(market, p) : 0)
+        if (payout > 0) {
+          const isWinner = market.resolvedOptionId === p.optionId
+          this.adjustBankroll(
+            userId,
+            payout,
+            isWinner ? 'payout' : 'refund',
+          )
+          if (isWinner && payout > p.wager) {
+            const won = payout - p.wager
+            this.addHeadline(
+              `${this.profileName(userId)} won $${won} on "${market.question}".`,
+            )
+          }
+        }
+        return { ...p, awardedPoints, payout }
       })
       if (changed) {
         bySeason.set(userId, next)
       }
     }
+  }
+
+  private profileName(userId: string): string {
+    return this.profiles.get(userId)?.displayName ?? 'A player'
   }
 
   private getScoresByLab(): Record<string, number> {
@@ -1781,19 +1853,27 @@ export default class BotWorldServer implements Party.Server {
   }
 
   private async loadGameLayers() {
-    const [profilesRaw, seasonsRaw, draftsRaw, marketsRaw, predictionsRaw, sentimentRaw] =
-      await Promise.all([
-        this.room.storage.get<Record<string, UserProfile>>(PROFILES_STORAGE_KEY),
-        this.room.storage.get<Season[]>(SEASONS_STORAGE_KEY),
-        this.room.storage.get<Record<string, Record<string, Draft>>>(DRAFTS_STORAGE_KEY),
-        this.room.storage.get<Record<string, PredictionMarket[]>>(MARKETS_STORAGE_KEY),
-        this.room.storage.get<Record<string, Record<string, UserPrediction[]>>>(
-          PREDICTIONS_STORAGE_KEY,
-        ),
-        this.room.storage.get<Record<string, Record<string, UserSentiment>>>(
-          SENTIMENT_STORAGE_KEY,
-        ),
-      ])
+    const [
+      profilesRaw,
+      seasonsRaw,
+      draftsRaw,
+      marketsRaw,
+      predictionsRaw,
+      sentimentRaw,
+      bankrollsRaw,
+    ] = await Promise.all([
+      this.room.storage.get<Record<string, UserProfile>>(PROFILES_STORAGE_KEY),
+      this.room.storage.get<Season[]>(SEASONS_STORAGE_KEY),
+      this.room.storage.get<Record<string, Record<string, Draft>>>(DRAFTS_STORAGE_KEY),
+      this.room.storage.get<Record<string, PredictionMarket[]>>(MARKETS_STORAGE_KEY),
+      this.room.storage.get<Record<string, Record<string, UserPrediction[]>>>(
+        PREDICTIONS_STORAGE_KEY,
+      ),
+      this.room.storage.get<Record<string, Record<string, UserSentiment>>>(
+        SENTIMENT_STORAGE_KEY,
+      ),
+      this.room.storage.get<Record<string, UserBankroll>>(BANKROLLS_STORAGE_KEY),
+    ])
 
     this.profiles = new Map(Object.entries(profilesRaw ?? {}))
     this.seasons = seasonsRaw ?? []
@@ -1803,11 +1883,33 @@ export default class BotWorldServer implements Party.Server {
         new Map(Object.entries(map ?? {})),
       ]),
     )
-    this.markets = new Map(Object.entries(marketsRaw ?? {}))
+    // Backfill pool on legacy markets so older persisted rooms don't crash
+    // after the wager-based redesign.
+    this.markets = new Map(
+      Object.entries(marketsRaw ?? {}).map(([seasonId, list]) => [
+        seasonId,
+        list.map((m) => ({ ...m, pool: m.pool ?? emptyPool() })),
+      ]),
+    )
     this.predictions = new Map(
       Object.entries(predictionsRaw ?? {}).map(([seasonId, map]) => [
         seasonId,
-        new Map(Object.entries(map ?? {})),
+        new Map(
+          Object.entries(map ?? {}).map(([userId, list]) => [
+            userId,
+            // Backfill wager/payout on legacy persisted predictions.
+            // Legacy rows had neither field, so default both to 0/null
+            // regardless of what TS thinks the in-memory shape is.
+            list.map((p) => {
+              const legacy = p as Partial<UserPrediction> & UserPrediction
+              return {
+                ...legacy,
+                wager: legacy.wager ?? 0,
+                payout: legacy.payout ?? null,
+              }
+            }),
+          ]),
+        ),
       ]),
     )
     this.sentiment = new Map(
@@ -1816,6 +1918,7 @@ export default class BotWorldServer implements Party.Server {
         new Map(Object.entries(map ?? {})),
       ]),
     )
+    this.bankrolls = new Map(Object.entries(bankrollsRaw ?? {}))
     this.recomputeAllSentimentAggregates()
   }
 
@@ -1844,7 +1947,48 @@ export default class BotWorldServer implements Party.Server {
       this.room.storage.put(MARKETS_STORAGE_KEY, marketsObj),
       this.room.storage.put(PREDICTIONS_STORAGE_KEY, predictionsObj),
       this.room.storage.put(SENTIMENT_STORAGE_KEY, sentimentObj),
+      this.room.storage.put(
+        BANKROLLS_STORAGE_KEY,
+        Object.fromEntries(this.bankrolls),
+      ),
     ])
+  }
+
+  private getOrCreateBankroll(userId: string): UserBankroll {
+    const existing = this.bankrolls.get(userId)
+    if (existing) return existing
+    const fresh: UserBankroll = {
+      userId,
+      balance: STARTING_BANKROLL,
+      lifetimeWon: 0,
+      lifetimeLost: 0,
+      updatedAt: Date.now(),
+    }
+    this.bankrolls.set(userId, fresh)
+    return fresh
+  }
+
+  private adjustBankroll(
+    userId: string,
+    delta: number,
+    kind: 'stake' | 'payout' | 'refund',
+  ): UserBankroll {
+    const bankroll = this.getOrCreateBankroll(userId)
+    const next: UserBankroll = {
+      ...bankroll,
+      balance: Math.max(0, bankroll.balance + delta),
+      lifetimeWon:
+        kind === 'payout' && delta > 0
+          ? bankroll.lifetimeWon + delta
+          : bankroll.lifetimeWon,
+      lifetimeLost:
+        kind === 'stake' && delta < 0
+          ? bankroll.lifetimeLost + -delta
+          : bankroll.lifetimeLost,
+      updatedAt: Date.now(),
+    }
+    this.bankrolls.set(userId, next)
+    return next
   }
 
   private ensureActiveSeason() {
@@ -1868,26 +2012,47 @@ export default class BotWorldServer implements Party.Server {
     if (!season || !this.worldSnapshot) return
 
     const list = this.markets.get(season.id) ?? []
+    const labs = COMPANY_BOTS.map((c) => ({ id: c.id, name: c.name }))
+    const now = Date.now()
+    let nextList = list
+
+    // Short-window "who leads at the next sync" market.
     const hasOpenNextSync = list.some(
       (m) => m.kind === 'next-sync-leader' && m.status === 'open',
     )
-    if (hasOpenNextSync) {
-      this.markets.set(season.id, list)
-      return
+    if (!hasOpenNextSync) {
+      const nextSyncAt =
+        this.worldSnapshot.asOf + GAME_CONFIG.WORLD_SYNC_INTERVAL_MS
+      nextList = [
+        ...nextList,
+        createNextSyncLeaderMarket({
+          seasonId: season.id,
+          labs,
+          opensAt: now,
+          nextSyncAt,
+          idSeed: `${season.id}-${this.worldSnapshot.asOf}`,
+        }),
+      ]
     }
 
-    const labs = COMPANY_BOTS.map((c) => ({ id: c.id, name: c.name }))
-    const now = Date.now()
-    const nextSyncAt =
-      this.worldSnapshot.asOf + GAME_CONFIG.WORLD_SYNC_INTERVAL_MS
-    const market = createNextSyncLeaderMarket({
-      seasonId: season.id,
-      labs,
-      opensAt: now,
-      nextSyncAt,
-      idSeed: `${season.id}-${this.worldSnapshot.asOf}`,
-    })
-    this.markets.set(season.id, [...list, market])
+    // Season-long milestone market — one per season.
+    const hasMilestoneMarket = list.some(
+      (m) => m.kind === 'first-to-milestone' && m.seasonId === season.id,
+    )
+    if (!hasMilestoneMarket) {
+      nextList = [
+        ...nextList,
+        createFirstToMilestoneMarket({
+          seasonId: season.id,
+          labs,
+          opensAt: now,
+          seasonSoftEndsAt: season.softEndsAt,
+          idSeed: season.id,
+        }),
+      ]
+    }
+
+    this.markets.set(season.id, nextList)
   }
 
   private async ensureProfile(userId: string) {
@@ -2014,16 +2179,18 @@ export default class BotWorldServer implements Party.Server {
     userId: string,
     marketId: string,
     optionId: string,
+    wager: number,
     sender: Party.Connection<ConnectionState>,
   ) {
     const season = this.getActiveSeason()
     if (!season) return
     const marketList = this.markets.get(season.id) ?? []
-    const market = marketList.find((m) => m.id === marketId)
-    if (!market) {
+    const marketIdx = marketList.findIndex((m) => m.id === marketId)
+    if (marketIdx === -1) {
       this.sendToast(sender, 'Market not found.', 'warning')
       return
     }
+    const market = marketList[marketIdx]
     if (market.status !== 'open') {
       this.sendToast(sender, 'Market is closed.', 'warning')
       return
@@ -2032,21 +2199,65 @@ export default class BotWorldServer implements Party.Server {
       this.sendToast(sender, 'Invalid option.', 'warning')
       return
     }
+    if (!Number.isFinite(wager)) {
+      this.sendToast(sender, 'Invalid wager.', 'warning')
+      return
+    }
+
+    await this.ensureProfile(userId)
+    const bankroll = this.getOrCreateBankroll(userId)
 
     const bySeason =
       this.predictions.get(season.id) ?? new Map<string, UserPrediction[]>()
     const userList = bySeason.get(userId) ?? []
-    const withoutThisMarket = userList.filter((p) => p.marketId !== marketId)
+    const previous = userList.find((p) => p.marketId === marketId) ?? null
+
+    // Refund any previous wager on this market before taking the new one.
+    let updatedMarket = market
+    let availableBalance = bankroll.balance
+    if (previous && previous.wager > 0) {
+      updatedMarket = {
+        ...updatedMarket,
+        pool: removeFromPool(updatedMarket.pool, previous.optionId, previous.wager),
+      }
+      this.adjustBankroll(userId, previous.wager, 'refund')
+      availableBalance += previous.wager
+    }
+
+    const normalizedWager = Math.floor(wager)
+    if (normalizedWager < MIN_WAGER) {
+      this.sendToast(sender, `Minimum wager is $${MIN_WAGER}.`, 'warning')
+      return
+    }
+    if (normalizedWager > availableBalance) {
+      this.sendToast(sender, 'Not enough sim cash for that wager.', 'warning')
+      return
+    }
+
+    // Commit new wager.
+    updatedMarket = {
+      ...updatedMarket,
+      pool: addToPool(updatedMarket.pool, optionId, normalizedWager),
+    }
+    this.adjustBankroll(userId, -normalizedWager, 'stake')
+
+    const nextMarketList = [...marketList]
+    nextMarketList[marketIdx] = updatedMarket
+    this.markets.set(season.id, nextMarketList)
+
     const prediction: UserPrediction = {
       userId,
       marketId,
       optionId,
+      wager: normalizedWager,
+      payout: null,
       submittedAt: Date.now(),
       awardedPoints: null,
     }
+    const withoutThisMarket = userList.filter((p) => p.marketId !== marketId)
     bySeason.set(userId, [...withoutThisMarket, prediction])
     this.predictions.set(season.id, bySeason)
-    await this.ensureProfile(userId)
+
     await this.persistGameLayers()
     this.sendUserState(sender, userId)
     this.broadcastSnapshot()
@@ -2142,6 +2353,7 @@ export default class BotWorldServer implements Party.Server {
       drafts: draftsForSeason,
       predictionsByUser: predictionsForSeason,
       scoresByLab: this.getScoresByLab(),
+      bankrolls: this.bankrolls,
       limit: 50,
     })
   }
@@ -2161,12 +2373,16 @@ export default class BotWorldServer implements Party.Server {
 
     const leaderboard = this.buildHumanLeaderboardSlice()
     const rankIndex = leaderboard.findIndex((e) => e.userId === userId)
+    // Only expose the bankroll to returning users so anonymous spectators
+    // don't accidentally "create" one they can't keep.
+    const userBankroll = profile ? this.getOrCreateBankroll(userId) : null
     return {
       userProfile: profile,
       userDraft: draft,
       userPredictions: preds,
       userSentiment: sentiment,
       userRank: rankIndex >= 0 ? rankIndex + 1 : null,
+      userBankroll,
     }
   }
 

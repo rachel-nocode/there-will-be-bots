@@ -20,6 +20,7 @@ import type {
   PredictionMarket,
   Season,
   SentimentValue,
+  UserBankroll,
   UserPrediction,
   UserProfile,
   UserSentiment,
@@ -29,6 +30,7 @@ export const PARTYKIT_ROOM_ID = 'main-world'
 export const LEADERBOARD_STORAGE_KEY = 'leaderboard'
 export const WORLD_SNAPSHOT_STORAGE_KEY = 'world-snapshot'
 export const SENTIMENT_SNAPSHOT_STORAGE_KEY = 'sentiment-snapshot:v1'
+export const BANKROLLS_STORAGE_KEY = 'bankrolls:v1'
 
 export interface CountrySentiment {
   tone: number
@@ -98,6 +100,7 @@ export interface UserState {
   userPredictions: UserPrediction[]
   userSentiment: Record<string, UserSentiment>
   userRank: number | null
+  userBankroll: UserBankroll | null
 }
 
 export type ClientMessage =
@@ -111,7 +114,7 @@ export type ClientMessage =
   | { type: 'set-display-name'; name: string }
   | { type: 'draft-lab'; labId: string }
   | { type: 'swap-lab'; labId: string }
-  | { type: 'predict'; marketId: string; optionId: string }
+  | { type: 'predict'; marketId: string; optionId: string; wager: number }
   | { type: 'set-sentiment'; labId: string; value: SentimentValue }
 
 export type ServerMessage =

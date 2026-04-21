@@ -19,10 +19,12 @@ import type {
   PredictionMarket,
   Season,
   SentimentValue,
+  UserBankroll,
   UserPrediction,
   UserProfile,
   UserSentiment,
 } from '../types/game'
+import { DEFAULT_WAGER } from '../types/game'
 import { generateId } from '../utils/formatters'
 
 type ConnectionStatus = 'idle' | 'connecting' | 'connected' | 'error'
@@ -49,12 +51,13 @@ interface GameStore {
   userPredictions: UserPrediction[]
   userSentiment: Record<string, UserSentiment>
   userRank: number | null
+  userBankroll: UserBankroll | null
   error: string | null
   connectPlayer: () => void
   removeToast: (id: string) => void
   draftLab: (labId: string) => void
   swapLab: (labId: string) => void
-  predict: (marketId: string, optionId: string) => void
+  predict: (marketId: string, optionId: string, wager?: number) => void
   setSentiment: (labId: string, value: SentimentValue) => void
   setDisplayName: (name: string) => void
 }
@@ -131,6 +134,7 @@ function applyUserState(userState: UserState) {
     userPredictions: userState.userPredictions,
     userSentiment: userState.userSentiment,
     userRank: userState.userRank,
+    userBankroll: userState.userBankroll,
   }
 }
 
@@ -163,6 +167,7 @@ export const useGameStore = create<GameStore>((set) => ({
   userPredictions: [],
   userSentiment: {},
   userRank: null,
+  userBankroll: null,
   error: null,
 
   connectPlayer: () => {
@@ -249,8 +254,8 @@ export const useGameStore = create<GameStore>((set) => ({
 
   draftLab: (labId) => sendClientMessage({ type: 'draft-lab', labId }),
   swapLab: (labId) => sendClientMessage({ type: 'swap-lab', labId }),
-  predict: (marketId, optionId) =>
-    sendClientMessage({ type: 'predict', marketId, optionId }),
+  predict: (marketId, optionId, wager = DEFAULT_WAGER) =>
+    sendClientMessage({ type: 'predict', marketId, optionId, wager }),
   setSentiment: (labId, value) =>
     sendClientMessage({ type: 'set-sentiment', labId, value }),
   setDisplayName: (name) =>

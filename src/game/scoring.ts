@@ -3,10 +3,12 @@ import type {
   HumanLeaderboardEntry,
   LabSentimentAggregate,
   PredictionMarket,
+  UserBankroll,
   UserPrediction,
   UserProfile,
   UserSentiment,
 } from '../types/game'
+import { STARTING_BANKROLL } from '../types/game'
 
 const PREDICTION_CORRECT_POINTS = 10
 
@@ -59,9 +61,10 @@ export function buildHumanLeaderboard(params: {
   drafts: Map<string, Draft>
   predictionsByUser: Map<string, UserPrediction[]>
   scoresByLab: Record<string, number>
+  bankrolls?: Map<string, UserBankroll>
   limit?: number
 }): HumanLeaderboardEntry[] {
-  const { profiles, drafts, predictionsByUser, scoresByLab } = params
+  const { profiles, drafts, predictionsByUser, scoresByLab, bankrolls } = params
   const entries: HumanLeaderboardEntry[] = []
 
   for (const [userId, profile] of profiles) {
@@ -74,6 +77,7 @@ export function buildHumanLeaderboard(params: {
     const predictionPoints = computePredictionPoints(
       predictionsByUser.get(userId) ?? [],
     )
+    const bankroll = bankrolls?.get(userId)?.balance ?? STARTING_BANKROLL
     entries.push({
       userId,
       displayName: profile.displayName,
@@ -81,6 +85,7 @@ export function buildHumanLeaderboard(params: {
       predictionPoints,
       totalPoints: draftPoints + predictionPoints,
       draftLabId,
+      bankroll,
     })
   }
 
