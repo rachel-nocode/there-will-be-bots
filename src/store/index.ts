@@ -1,30 +1,16 @@
 import PartySocket from 'partysocket'
 import { create } from 'zustand'
-import { GAME_CONFIG } from '../data/config'
+import { HEIST_CONFIG } from '../heist/config'
+import { assignGameRoom } from '../multiplayer/matchmaking'
 import {
   PARTYKIT_ROOM_ID,
   type ClientMessage,
-  type LeaderboardEntry,
-  type MultiplayerPlayer,
-  type MultiplayerSnapshot,
-  type SentimentBroadcast,
+  type HeistPhase,
+  type HeistPlayer,
+  type HeistSnapshot,
   type ServerMessage,
-  type UserState,
 } from '../multiplayer/contracts'
 import type { Toast } from '../types'
-import type {
-  Draft,
-  HumanLeaderboardEntry,
-  LabSentimentAggregate,
-  PredictionMarket,
-  Season,
-  SentimentValue,
-  UserBankroll,
-  UserPrediction,
-  UserProfile,
-  UserSentiment,
-} from '../types/game'
-import { DEFAULT_WAGER } from '../types/game'
 import { generateId } from '../utils/formatters'
 
 type ConnectionStatus = 'idle' | 'connecting' | 'connected' | 'error'
@@ -32,50 +18,41 @@ type ConnectionStatus = 'idle' | 'connecting' | 'connected' | 'error'
 interface GameStore {
   connectionStatus: ConnectionStatus
   partyHost: string
-  spectatorId: string
-  players: MultiplayerPlayer[]
-  leaderboard: LeaderboardEntry[]
-  headlines: string[]
+  partyRoomId: string | null
+  playerId: string
+  players: HeistPlayer[]
+  orbs: HeistSnapshot['orbs']
+  godzillas: HeistSnapshot['godzillas']
+  escapeZones: HeistSnapshot['escapeZones']
   toasts: Toast[]
   tick: number
-  roomPhase: MultiplayerSnapshot['phase']
-  worldSnapshotMeta: MultiplayerSnapshot['worldSnapshotMeta']
-  season: Season | null
-  openMarkets: PredictionMarket[]
-  resolvedMarkets: PredictionMarket[]
-  sentimentByLab: Record<string, LabSentimentAggregate>
-  humanLeaderboard: HumanLeaderboardEntry[]
-  aiSentiment: SentimentBroadcast | null
-  userProfile: UserProfile | null
-  userDraft: Draft | null
-  userPredictions: UserPrediction[]
-  userSentiment: Record<string, UserSentiment>
-  userRank: number | null
-  userBankroll: UserBankroll | null
+  phase: HeistPhase
+  phaseEndsAt: number | null
+  lobbyCountdownAt: number | null
+  tourRound: number
+  tourCities: string[]
+  activeCityId: string | null
+  winnerId: string | null
+  humanCount: number
   error: string | null
   connectPlayer: () => void
   removeToast: (id: string) => void
-  draftLab: (labId: string) => void
-  swapLab: (labId: string) => void
-  predict: (marketId: string, optionId: string, wager?: number) => void
-  setSentiment: (labId: string, value: SentimentValue) => void
+  moveTo: (lat: number, lng: number) => void
   setDisplayName: (name: string) => void
 }
 
-const SPECTATOR_ID_STORAGE_KEY = 'agigame.spectator-id'
+const PLAYER_ID_STORAGE_KEY = 'heist.player-id'
 
 let socket: PartySocket | null = null
 
-function loadSpectatorId() {
+function loadPlayerId() {
   if (typeof window === 'undefined') {
-    return `spectator-${Math.random().toString(36).slice(2, 9)}`
+    return `merc-${Math.random().toString(36).slice(2, 9)}`
   }
-  const existing = window.localStorage.getItem(SPECTATOR_ID_STORAGE_KEY)
-  if (existing) {
-    return existing
-  }
-  const created = `spectator-${generateId()}`
-  window.localStorage.setItem(SPECTATOR_ID_STORAGE_KEY, created)
+  const existing = window.localStorage.getItem(PLAYER_ID_STORAGE_KEY)
+  if (existing) return existing
+  const created = `merc-${generateId()}`
+  window.localStorage.setItem(PLAYER_ID_STORAGE_KEY, created)
   return created
 }
 
@@ -89,16 +66,8 @@ function getPartyHost() {
   return '127.0.0.1:1999'
 }
 
-function sortPlayers(players: MultiplayerPlayer[]) {
-  return [...players].sort(
-    (left, right) =>
-      (right.sourceBackedStats.agiScore ?? 0) -
-      (left.sourceBackedStats.agiScore ?? 0),
-  )
-}
-
 function pushToast(toasts: Toast[], toast: Toast) {
-  return [...toasts.slice(-GAME_CONFIG.MAX_TOASTS + 1), toast]
+  return [...toasts.slice(-HEIST_CONFIG.MAX_TOASTS + 1), toast]
 }
 
 function makeLocalToast(message: string, type: Toast['type']): Toast {
@@ -110,31 +79,21 @@ function makeLocalToast(message: string, type: Toast['type']): Toast {
   }
 }
 
-function applySnapshot(snapshot: MultiplayerSnapshot) {
+function applySnapshot(snapshot: HeistSnapshot) {
   return {
-    players: sortPlayers(snapshot.players),
-    leaderboard: snapshot.leaderboard,
-    headlines: snapshot.headlines,
+    players: snapshot.players,
+    orbs: snapshot.orbs,
+    godzillas: snapshot.godzillas,
+    escapeZones: snapshot.escapeZones,
     tick: snapshot.tick,
-    roomPhase: snapshot.phase,
-    worldSnapshotMeta: snapshot.worldSnapshotMeta,
-    season: snapshot.season,
-    openMarkets: snapshot.openMarkets,
-    resolvedMarkets: snapshot.resolvedMarkets,
-    sentimentByLab: snapshot.sentimentByLab,
-    humanLeaderboard: snapshot.humanLeaderboard,
-    aiSentiment: snapshot.aiSentiment,
-  }
-}
-
-function applyUserState(userState: UserState) {
-  return {
-    userProfile: userState.userProfile,
-    userDraft: userState.userDraft,
-    userPredictions: userState.userPredictions,
-    userSentiment: userState.userSentiment,
-    userRank: userState.userRank,
-    userBankroll: userState.userBankroll,
+    phase: snapshot.phase,
+    phaseEndsAt: snapshot.phaseEndsAt,
+    lobbyCountdownAt: snapshot.lobbyCountdownAt,
+    tourRound: snapshot.tourRound,
+    tourCities: snapshot.tourCities,
+    activeCityId: snapshot.activeCityId,
+    winnerId: snapshot.winnerId,
+    humanCount: snapshot.humanCount,
   }
 }
 
@@ -143,50 +102,63 @@ function sendClientMessage(message: ClientMessage) {
   socket.send(JSON.stringify(message))
 }
 
-const initialSpectatorId = loadSpectatorId()
+const initialPlayerId = loadPlayerId()
 
-export const useGameStore = create<GameStore>((set) => ({
+export const useGameStore = create<GameStore>((set, get) => ({
   connectionStatus: 'idle',
   partyHost: getPartyHost(),
-  spectatorId: initialSpectatorId,
+  partyRoomId: null,
+  playerId: initialPlayerId,
   players: [],
-  leaderboard: [],
-  headlines: [],
+  orbs: [],
+  godzillas: [],
+  escapeZones: [],
   toasts: [],
   tick: 0,
-  roomPhase: 'waiting',
-  worldSnapshotMeta: null,
-  season: null,
-  openMarkets: [],
-  resolvedMarkets: [],
-  sentimentByLab: {},
-  humanLeaderboard: [],
-  aiSentiment: null,
-  userProfile: null,
-  userDraft: null,
-  userPredictions: [],
-  userSentiment: {},
-  userRank: null,
-  userBankroll: null,
+  phase: 'lobby',
+  phaseEndsAt: null,
+  lobbyCountdownAt: null,
+  tourRound: 0,
+  tourCities: [],
+  activeCityId: null,
+  winnerId: null,
+  humanCount: 0,
   error: null,
 
-  connectPlayer: () => {
+  connectPlayer: async () => {
     if (socket) {
       socket.close()
       socket = null
     }
 
-    set({
-      connectionStatus: 'connecting',
-      error: null,
-    })
+    set({ connectionStatus: 'connecting', error: null })
+
+    const host = getPartyHost()
+    let roomId = PARTYKIT_ROOM_ID
+
+    try {
+      const assignment = await assignGameRoom(host)
+      roomId = assignment.roomId
+      set({ partyRoomId: roomId })
+    } catch {
+      set({
+        partyRoomId: roomId,
+        toasts: pushToast(
+          get().toasts,
+          makeLocalToast(
+            'Matchmaker unavailable — joining a default city.',
+            'warning',
+          ),
+        ),
+      })
+    }
 
     const nextSocket = new PartySocket({
-      host: getPartyHost(),
-      room: PARTYKIT_ROOM_ID,
+      host,
+      room: roomId,
       query: async () => ({
-        playerId: initialSpectatorId,
-        name: 'Spectator',
+        playerId: initialPlayerId,
+        name: 'Mercenary',
       }),
     })
 
@@ -221,7 +193,7 @@ export const useGameStore = create<GameStore>((set) => ({
       }
 
       if (payload.type === 'user-state') {
-        set(() => applyUserState(payload.userState))
+        set({ playerId: payload.userState.playerId })
         return
       }
 
@@ -236,7 +208,7 @@ export const useGameStore = create<GameStore>((set) => ({
       if (socket !== nextSocket) return
       set({
         connectionStatus: 'connecting',
-        error: 'Trying to reconnect to the live room.',
+        error: 'Reconnecting to public room…',
       })
     })
 
@@ -244,7 +216,7 @@ export const useGameStore = create<GameStore>((set) => ({
       if (socket !== nextSocket) return
       set({
         connectionStatus: 'error',
-        error: 'Could not reach the live room.',
+        error: 'Could not reach the game room.',
       })
     })
   },
@@ -252,12 +224,21 @@ export const useGameStore = create<GameStore>((set) => ({
   removeToast: (id) =>
     set((state) => ({ toasts: state.toasts.filter((toast) => toast.id !== id) })),
 
-  draftLab: (labId) => sendClientMessage({ type: 'draft-lab', labId }),
-  swapLab: (labId) => sendClientMessage({ type: 'swap-lab', labId }),
-  predict: (marketId, optionId, wager = DEFAULT_WAGER) =>
-    sendClientMessage({ type: 'predict', marketId, optionId, wager }),
-  setSentiment: (labId, value) =>
-    sendClientMessage({ type: 'set-sentiment', labId, value }),
-  setDisplayName: (name) =>
-    sendClientMessage({ type: 'set-display-name', name }),
+  moveTo: (lat, lng) => sendClientMessage({ type: 'move', lat, lng }),
+  setDisplayName: (name) => sendClientMessage({ type: 'set-display-name', name }),
 }))
+
+export function useSelfPlayer() {
+  const playerId = useGameStore((state) => state.playerId)
+  const players = useGameStore((state) => state.players)
+  return players.find((player) => player.id === playerId) ?? null
+}
+
+export function useSecondsRemaining(
+  endsAt: number | null,
+  tick: number,
+): number | null {
+  if (!endsAt) return null
+  void tick
+  return Math.max(0, Math.ceil((endsAt - Date.now()) / 1000))
+}

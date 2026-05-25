@@ -51,6 +51,8 @@ html, body, #root {
   color: var(--color-text-primary);
   -webkit-font-smoothing: antialiased;
   font-feature-settings: "ss01", "cv11";
+  touch-action: manipulation;
+  overscroll-behavior: none;
 }
 
 .font-mono, .tabular-nums {
@@ -73,6 +75,18 @@ html, body, #root {
 @keyframes live-pulse {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.6; transform: scale(0.85); }
+}
+
+/* Mobile game shell — keep controls above map chrome */
+.mobile-game-shell {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+@media (max-width: 767px) {
+  .mapboxgl-ctrl-bottom-left,
+  .mapboxgl-ctrl-bottom-right {
+    display: none !important;
+  }
 }
 
 .live-dot {

@@ -5,11 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "dev:party": "partykit dev party/index.ts",
+    "dev:party": "partykit dev",
     "build": "tsc -b && vite build",
     "deploy:netlify": "npx netlify deploy --prod",
     "deploy:netlify:preview": "npx netlify deploy",
-    "deploy:party": "partykit deploy party/index.ts",
+    "deploy:party": "partykit deploy",
     "lint": "eslint .",
     "preview": "vite preview"
   },
