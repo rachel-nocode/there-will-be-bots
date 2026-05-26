@@ -17,6 +17,7 @@ import {
 import { HEIST_CONFIG } from '../heist/config'
 import { useIsTouchDevice } from '../hooks/useIsTouchDevice'
 import { useGameStore } from '../store'
+import { SELF_PLAYER_COLOR } from '../utils/playerIdentity'
 
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN
 
@@ -309,15 +310,32 @@ export default function GameMap() {
                       anchor="center"
                     >
                       <div className="group relative flex flex-col items-center">
+                        {isSelf ? (
+                          <span className="mb-1 rounded-md bg-red-500 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.2em] text-white shadow-[0_0_16px_rgba(255,71,87,0.65)]">
+                            YOU
+                          </span>
+                        ) : null}
                         <span
-                          className={`flex h-5 w-5 items-center justify-center rounded-full border-2 ${
-                            escaped
-                              ? 'border-emerald-300 shadow-[0_0_12px_rgba(52,211,153,0.8)]'
-                              : 'border-white/80'
-                          } ${stunned ? 'opacity-50' : ''} ${isSelf ? 'ring-2 ring-white/40 ring-offset-1 ring-offset-black/50' : ''}`}
-                          style={{ backgroundColor: player.color }}
+                          className={`flex items-center justify-center rounded-full border-2 ${
+                            isSelf
+                              ? 'h-8 w-8 animate-pulse border-red-200 shadow-[0_0_20px_rgba(255,71,87,0.85)]'
+                              : escaped
+                                ? 'h-5 w-5 border-emerald-300 shadow-[0_0_12px_rgba(52,211,153,0.8)]'
+                                : 'h-5 w-5 border-white/80'
+                          } ${stunned ? 'opacity-50' : ''}`}
+                          style={{
+                            backgroundColor: isSelf
+                              ? SELF_PLAYER_COLOR
+                              : player.color,
+                          }}
                         />
-                        <span className="mt-1 max-w-28 truncate rounded bg-black/70 px-1.5 py-0.5 text-[10px] text-white/90">
+                        <span
+                          className={`mt-1 max-w-32 truncate rounded px-1.5 py-0.5 text-[10px] ${
+                            isSelf
+                              ? 'bg-red-950/90 font-semibold text-red-100'
+                              : 'bg-black/70 text-white/90'
+                          }`}
+                        >
                           {player.name}
                           {player.isBot ? ' 🤖' : ''}
                           {escaped ? ' ✓' : ''}

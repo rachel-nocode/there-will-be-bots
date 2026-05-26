@@ -481,7 +481,7 @@ function buildFallbackSnapshot(now: number): WorldSnapshot {
 async function fetchText(fetchImpl: FetchLike, url: string) {
   const response = await fetchImpl(url, {
     headers: {
-      'user-agent': 'there-will-be-bots/1.0',
+      'user-agent': 'slopzilla/1.0',
       accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     },
   })

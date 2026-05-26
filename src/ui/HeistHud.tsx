@@ -8,6 +8,7 @@ import {
   useSecondsRemaining,
   useSelfPlayer,
 } from '../store'
+import { SELF_PLAYER_COLOR } from '../utils/playerIdentity'
 
 const PHASE_LABELS = {
   lobby: 'Lobby',
@@ -93,7 +94,7 @@ export default function HeistHud() {
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0 flex-1">
               <p className="text-[9px] uppercase tracking-[0.24em] text-cyan-300/80 md:text-[10px] md:tracking-[0.28em]">
-                Token Run
+                Slopzilla
               </p>
               <h1
                 className={`truncate text-base font-semibold md:text-lg ${
@@ -157,16 +158,23 @@ export default function HeistHud() {
               {rankedPlayers.map((player, index) => (
                 <li
                   key={player.id}
-                  className="flex items-center gap-1.5 text-[11px] text-white/85"
+                  className={`flex items-center gap-1.5 text-[11px] ${
+                    player.id === self?.id ? 'text-red-200' : 'text-white/85'
+                  }`}
                 >
                   <span
                     className="h-2 w-2 shrink-0 rounded-full"
-                    style={{ backgroundColor: player.color }}
+                    style={{
+                      backgroundColor:
+                        player.id === self?.id
+                          ? SELF_PLAYER_COLOR
+                          : player.color,
+                    }}
                   />
                   <span className="max-w-[5.5rem] truncate">
+                    {player.id === self?.id ? 'YOU · ' : ''}
                     {index + 1}. {player.name}
                     {player.isBot ? ' 🤖' : ''}
-                    {player.id === self?.id ? ' · you' : ''}
                   </span>
                   <span className="font-mono text-cyan-200">{player.bankedData}</span>
                 </li>
@@ -184,18 +192,37 @@ export default function HeistHud() {
               {rankedPlayers.map((player, index) => (
                 <li
                   key={player.id}
-                  className="flex items-center justify-between gap-2 text-sm"
+                  className={`flex items-center justify-between gap-2 text-sm ${
+                    player.id === self?.id ? 'rounded-lg bg-red-500/10 px-1 py-0.5' : ''
+                  }`}
                 >
                   <span className="flex min-w-0 items-center gap-2">
                     <span
-                      className="h-2.5 w-2.5 shrink-0 rounded-full"
-                      style={{ backgroundColor: player.color }}
+                      className={`h-2.5 w-2.5 shrink-0 rounded-full ${
+                        player.id === self?.id ? 'ring-2 ring-red-300/70' : ''
+                      }`}
+                      style={{
+                        backgroundColor:
+                          player.id === self?.id
+                            ? SELF_PLAYER_COLOR
+                            : player.color,
+                      }}
                     />
-                    <span className="truncate text-white/90">
+                    <span
+                      className={`truncate ${
+                        player.id === self?.id
+                          ? 'font-semibold text-red-100'
+                          : 'text-white/90'
+                      }`}
+                    >
+                      {player.id === self?.id ? (
+                        <span className="mr-1 rounded bg-red-500 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-white">
+                          You
+                        </span>
+                      ) : null}
                       {index + 1}. {player.name}
                       {player.isBot ? ' 🤖' : ''}
                       {player.escaped ? ' ✓' : ''}
-                      {player.id === self?.id ? ' (you)' : ''}
                     </span>
                   </span>
                   <span className="font-mono text-cyan-200">
@@ -226,7 +253,10 @@ export default function HeistHud() {
             <div className="flex items-end justify-between gap-3">
               <div className="min-w-0">
                 <p className="text-[9px] uppercase tracking-[0.2em] text-white/45 md:text-[10px] md:tracking-[0.24em]">
-                  Your tokens
+                  {self.name}
+                  <span className="ml-2 rounded bg-red-500 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider text-white">
+                    You
+                  </span>
                 </p>
                 <p className="font-mono text-lg text-white md:text-xl">
                   <span className="text-cyan-300">{self.carryingData}</span>

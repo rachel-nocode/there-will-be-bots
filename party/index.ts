@@ -133,7 +133,7 @@ export default class HeistServer implements Party.Server {
   onRequest(req: Party.Request) {
     const url = new URL(req.url)
     if (url.searchParams.get('meta') !== '1') {
-      return new Response('Token Run city room', {
+      return new Response('Slopzilla city room', {
         headers: { 'content-type': 'text/plain; charset=utf-8' },
       })
     }

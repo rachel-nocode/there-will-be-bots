@@ -56,7 +56,7 @@ export default class MatchmakerServer implements Party.Server {
     if (url.searchParams.get('assign') !== '1') {
       return Response.json({
         ok: true,
-        message: 'Token Run matchmaker — use ?assign=1',
+        message: 'Slopzilla matchmaker — use ?assign=1',
         maxPlayers: HEIST_CONFIG.MAX_PLAYERS,
       })
     }

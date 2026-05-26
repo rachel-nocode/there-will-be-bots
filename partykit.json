@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/partykit/schema.json",
-  "name": "there-will-be-bots",
+  "name": "slopzilla",
   "main": "party/index.ts",
   "parties": {
     "matchmaker": "party/matchmaker.ts"

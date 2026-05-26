@@ -12,6 +12,7 @@ import {
 } from '../multiplayer/contracts'
 import type { Toast } from '../types'
 import { generateId } from '../utils/formatters'
+import { loadPlayerName } from '../utils/playerIdentity'
 
 type ConnectionStatus = 'idle' | 'connecting' | 'connected' | 'error'
 
@@ -158,7 +159,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       room: roomId,
       query: async () => ({
         playerId: initialPlayerId,
-        name: 'Mercenary',
+        name: loadPlayerName() || 'Runner',
       }),
     })
 
@@ -167,6 +168,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
     nextSocket.addEventListener('open', () => {
       if (socket !== nextSocket) return
       set({ connectionStatus: 'connected', error: null })
+      const savedName = loadPlayerName()
+      if (savedName.length >= 2) {
+        sendClientMessage({ type: 'set-display-name', name: savedName })
+      }
     })
 
     nextSocket.addEventListener('message', (event) => {
